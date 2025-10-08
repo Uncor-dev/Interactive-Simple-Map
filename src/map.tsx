@@ -11,7 +11,8 @@ import GeoJSON from "ol/format/GeoJSON";
 import { Style, Fill, Stroke, Circle as CircleStyle } from "ol/style";
 import Feature from "ol/Feature";
 import Point from "ol/geom/Point";
-import Overlay from "ol/Overlay";
+import CountryCard from "@/components/world-cards/CountryCard";
+import type { Mode as CardMode } from "@/components/world-cards/types";
 
 type Mode =
     | "all-producers"
@@ -66,7 +67,6 @@ export default function WorldSugarMap() {
     const [mode, setMode] = useState<Mode>("top-producers");
     const [countryLayer, setCountryLayer] = useState<VectorLayer<VectorSource> | null>(null);
     const [selected, setSelected] = useState<{ name: string; iso3: string } | null>(null);
-    const [overlay, setOverlay] = useState<Overlay | null>(null);
 
     const styleFunction = (feature: any) => {
         const iso3 = (feature.get("ISO_A3") || feature.get("iso_a3") || "").toUpperCase();
@@ -180,15 +180,6 @@ export default function WorldSugarMap() {
         };
         countriesSource.on("featuresloadend", fitOnce as any);
 
-        // ===== OVERLAY POPUP =====
-        const ov = new Overlay({
-            element: popupRef.current as HTMLElement,
-            offset: [0, -15],
-            positioning: "bottom-center",
-            stopEvent: true,
-        });
-        map.addOverlay(ov);
-
         // ===== CLICK (pins → pays) =====
         const clickKey = map.on("singleclick", (evt) => {
             let handled = false;
@@ -198,7 +189,6 @@ export default function WorldSugarMap() {
                 const iso3 = (pin.get("iso3") || "").toUpperCase();
                 const name = pin.get("name") || "";
                 setSelected({ iso3, name });
-                ov.setPosition((pin.getGeometry() as Point).getCoordinates());
                 handled = true;
             }
 
@@ -218,20 +208,16 @@ export default function WorldSugarMap() {
 
                     if (set.has(iso3)) {
                         setSelected({ iso3, name: admin });
-                        ov.setPosition(evt.coordinate);
                     } else {
                         setSelected(null);
-                        ov.setPosition(undefined);
                     }
                 } else {
                     setSelected(null);
-                    ov.setPosition(undefined);
                 }
             }
         });
 
         setCountryLayer(countries);
-        setOverlay(ov);
 
         // ===== CLEANUP (unique) =====
         return () => {
@@ -250,7 +236,6 @@ export default function WorldSugarMap() {
                     : COMPETITORS_SPECIALTY;
             if (!set.has(selected.iso3)) {
                 setSelected(null);
-                overlay?.setPosition(undefined);
             }
         }
     }, [mode]);
@@ -310,35 +295,25 @@ export default function WorldSugarMap() {
                 </ul>
             </div>
 
-            {/* popup/card */}
-            <div
-                ref={popupRef}
-                className="absolute z-20"
-                style={{ transform: "translate(-50%, -100%)" }}
-            >
-                {selected && (
-                    <div className="bg-white/95 backdrop-blur shadow-xl rounded-md p-4 w-72">
-                        <div className="flex items-start justify-between mb-2">
-                            <h5 className="font-semibold">{selected.name}</h5>
-                            <button
-                                className="text-gray-500 hover:text-gray-800"
-                                onClick={() => {
-                                    setSelected(null);
-                                    overlay?.setPosition(undefined);
-                                }}
-                            >
-                                ✕
-                            </button>
-                        </div>
-                        <div className="text-sm text-gray-700 space-y-2">
-                            <p>ISO-3 : {selected.iso3}</p>
-                            <p className="text-gray-600">
-                                Placeholder: stats sucre / liens / CTA.
-                            </p>
+            {selected && (
+                <div className="absolute inset-0 z-30 pointer-events-none">
+                    <div className="absolute top-4 right-4 pointer-events-auto">
+                        <div className="bg-white/95 backdrop-blur shadow-xl rounded-md p-4 w-80 max-h-[90vh] overflow-y-auto">
+                            <div className="flex items-start justify-between mb-2">
+                                <h5 className="font-semibold">{selected.name}</h5>
+                                <button
+                                    className="text-gray-500 hover:text-gray-800"
+                                    onClick={() => setSelected(null)}
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            <CountryCard mode={mode as CardMode} iso3={selected.iso3} name={selected.name} />
                         </div>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
         </div>
     );
 }
