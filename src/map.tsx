@@ -63,10 +63,15 @@ const pinStyle = new Style({
 
 export default function WorldSugarMap() {
     const mapDivRef = useRef<HTMLDivElement>(null);
-    const popupRef = useRef<HTMLDivElement>(null);
     const [mode, setMode] = useState<Mode>("top-producers");
     const [countryLayer, setCountryLayer] = useState<VectorLayer<VectorSource> | null>(null);
     const [selected, setSelected] = useState<{ name: string; iso3: string } | null>(null);
+    const [pinsLayer, setPinsLayer] = useState<VectorLayer<VectorSource> | null>(null);
+    const mapRef = useRef<Map | null>(null);
+    const modeRef = useRef<Mode>(mode);
+    useEffect(() => {
+        modeRef.current = mode;
+    }, [mode]);
 
     const styleFunction = (feature: any) => {
         const iso3 = (feature.get("ISO_A3") || feature.get("iso_a3") || "").toUpperCase();
@@ -76,6 +81,50 @@ export default function WorldSugarMap() {
         return set.has(iso3) ? selectedCountryStyle : defaultCountryStyle;
     };
 
+    const PIN_RADIUS_NORMAL = 7;
+    const PIN_RADIUS_HOVER = 10;
+    const PIN_TWEEN_MS = 180;
+
+    function makePinStyle(radius: number) {
+        return new Style({
+            image: new CircleStyle({
+                radius,
+                fill: new Fill({ color: PIN_FILL }),
+            }),
+        });
+    }
+
+    function animatePinRadius(pin: Feature<Point>, to: number, duration = PIN_TWEEN_MS) {
+        const currentStyle = pin.getStyle() as Style | null;
+        const currentImage = currentStyle?.getImage?.();
+        const from =
+            currentImage && typeof (currentImage as any).getRadius === "function"
+                ? (currentImage as any).getRadius()
+                : PIN_RADIUS_NORMAL;
+
+        const prev = pin.get("_animId") as number | undefined;
+        if (prev) cancelAnimationFrame(prev);
+
+        const start = performance.now();
+        const easeOutCubic = (x: number) => 1 - Math.pow(1 - x, 3);
+
+        const step = (now: number) => {
+            const t = Math.min(1, (now - start) / duration);
+            const r = from + (to - from) * easeOutCubic(t);
+            pin.setStyle(makePinStyle(r));
+
+            if (t < 1) {
+                const id = requestAnimationFrame(step);
+                pin.set("_animId", id);
+            } else {
+                pin.set("_animId", undefined);
+            }
+        };
+
+        const id = requestAnimationFrame(step);
+        pin.set("_animId", id);
+    }
+
     useEffect(() => {
         if (!mapDivRef.current) return;
 
@@ -83,22 +132,20 @@ export default function WorldSugarMap() {
         const countriesSource = new VectorSource({
             url: "/world_countries.geojson",
             format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
-            wrapX: true, // ✅ pas de répétition
+            wrapX: true,
             attributions: "© Natural Earth",
         });
 
         countriesSource.on("addfeature", (e: any) => {
             const f = e.feature;
             const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
-            if (iso3 === "ATA") {
-                countriesSource.removeFeature(f);
-            }
+            if (iso3 === "ATA") countriesSource.removeFeature(f);
         });
 
         const bordersSource = new VectorSource({
             url: "/world_borders.geojson",
             format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
-            wrapX: true, // ✅
+            wrapX: true,
         });
 
         const pinSource = new VectorSource({ wrapX: false });
@@ -148,7 +195,7 @@ export default function WorldSugarMap() {
         const w2 = (getWidth(worldExtent) * f) / 2;
         const h2 = (getHeight(worldExtent) * f) / 2;
         const paddedExtent: [number, number, number, number] = [
-            c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2
+            c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2,
         ];
 
         const map = new Map({
@@ -166,6 +213,7 @@ export default function WorldSugarMap() {
             }),
             controls: [],
         });
+        mapRef.current = map;
 
         const fitOnce = () => {
             const feats = countriesSource.getFeatures();
@@ -200,9 +248,9 @@ export default function WorldSugarMap() {
                     const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
                     const admin = f.get("ADMIN") || f.get("name") || "Pays";
                     const set =
-                        mode === "all-producers"
+                        modeRef.current === "all-producers"
                             ? ALL_SUGAR_PRODUCERS
-                            : mode === "top-producers"
+                            : modeRef.current === "top-producers"
                                 ? TOP_PRODUCERS
                                 : COMPETITORS_SPECIALTY;
 
@@ -217,12 +265,92 @@ export default function WorldSugarMap() {
             }
         });
 
-        setCountryLayer(countries);
+        let lastHoveredIso3: string | null = null;
+        let currentScaledPin: Feature<Point> | null = null;
 
-        // ===== CLEANUP (unique) =====
+        function resetHoveredPin(immediate = false) {
+            if (!currentScaledPin) return;
+            if (immediate) {
+                currentScaledPin.setStyle(makePinStyle(PIN_RADIUS_NORMAL));
+                const prev = currentScaledPin.get("_animId") as number | undefined;
+                if (prev) cancelAnimationFrame(prev);
+                currentScaledPin.set("_animId", undefined);
+            } else {
+                animatePinRadius(currentScaledPin, PIN_RADIUS_NORMAL, 120);
+            }
+            currentScaledPin = null;
+            lastHoveredIso3 = null;
+        }
+
+        const moveKey = map.on("pointermove", (evt) => {
+            if (evt.dragging) return;
+
+            const feat = map.forEachFeatureAtPixel(
+                evt.pixel,
+                (f, layer) => (layer === countries ? f : null),
+                { hitTolerance: 3 }
+            );
+
+            const resetPin = () => {
+                if (currentScaledPin) {
+                    currentScaledPin.setStyle(pinStyle);
+                    currentScaledPin = null;
+                }
+                lastHoveredIso3 = null;
+            };
+
+            if (!feat) {
+                resetHoveredPin(false);
+                return;
+            }
+
+            const iso3 = (feat.get("ISO_A3") || feat.get("iso_a3") || "").toUpperCase();
+
+            const set =
+                modeRef.current === "all-producers"
+                    ? ALL_SUGAR_PRODUCERS
+                    : modeRef.current === "top-producers"
+                        ? TOP_PRODUCERS
+                        : COMPETITORS_SPECIALTY;
+
+            if (!set.has(iso3)) {
+                resetHoveredPin(false);
+                return;
+            }
+
+            if (iso3 !== lastHoveredIso3) {
+                if (currentScaledPin) resetHoveredPin(false);
+                if (currentScaledPin) animatePinRadius(currentScaledPin, PIN_RADIUS_NORMAL);
+
+                const match = pins.getSource()
+                    ?.getFeatures()
+                    .find((p) => (p.get("iso3") || "").toUpperCase() === iso3) as Feature<Point> | undefined;
+
+                if (match) {
+                    animatePinRadius(match, PIN_RADIUS_HOVER);
+                    currentScaledPin = match;
+                    lastHoveredIso3 = iso3;
+                } else {
+                    resetPin();
+                }
+            }
+        });
+
+        setCountryLayer(countries);
+        setPinsLayer(pins);
+
+        const viewportEl = map.getViewport();
+        const onMouseLeave = () => resetHoveredPin(false);
+        viewportEl.addEventListener("mouseleave", onMouseLeave);
+
+        // ===== CLEANUP =====
         return () => {
+            viewportEl.removeEventListener("mouseleave", onMouseLeave);
             unByKey(clickKey);
+            unByKey(moveKey);
+            if (currentScaledPin) currentScaledPin.setStyle(pinStyle);
             map.setTarget(undefined);
+            mapRef.current = null;
         };
     }, []);
 
@@ -294,7 +422,7 @@ export default function WorldSugarMap() {
                     </li>
                 </ul>
             </div>
-
+            {/* popup */}
             {selected && (
                 <div className="absolute inset-0 z-30 pointer-events-none">
                     <div className="absolute top-4 right-4 pointer-events-auto">
