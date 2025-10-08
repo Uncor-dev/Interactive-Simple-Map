@@ -13,6 +13,7 @@ import Feature from "ol/Feature";
 import Point from "ol/geom/Point";
 import CountryCard from "@/components/world-cards/CountryCard";
 import type { Mode as CardMode } from "@/components/world-cards/types";
+import Icon from "ol/style/Icon";
 
 type Mode =
     | "all-producers"
@@ -37,8 +38,8 @@ const PINS: Array<{ iso3: string; name: string; lon: number; lat: number }> = [
     { iso3: "RUS", name: "Russie", lon: 105.3188, lat: 61.524 },
     { iso3: "IND", name: "Inde", lon: 78.9629, lat: 20.5937 },
     { iso3: "CHN", name: "Chine", lon: 104.1954, lat: 35.8617 },
-    { iso3: "THA", name: "Thaïlande", lon: 100.9925, lat: 15.870 },
-    { iso3: "AUS", name: "Australie", lon: 133.7751, lat: -25.274 }
+    { iso3: "THA", name: "Thaïlande", lon: 100.9925, lat: 15.87 },
+    { iso3: "AUS", name: "Australie", lon: 133.7751, lat: -25.274 },
 ];
 
 const COLOR_BG = "#F4F5F0";
@@ -54,12 +55,58 @@ const selectedCountryStyle = new Style({
     fill: new Fill({ color: "#88b940" }),
 });
 
-const pinStyle = new Style({
-    image: new CircleStyle({
-        radius: 7,
-        fill: new Fill({ color: PIN_FILL }),
-    }),
-});
+const PIN_SCALE_NORMAL = 0.7;
+const PIN_SCALE_HOVER = 1;
+const PIN_TWEEN_MS = 180;
+
+const PIN_SVG = encodeURIComponent(
+    `<svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 32c0 0 10-11 10-18a10 10 0 1 0-20 0c0 7 10 18 10 18z" fill="${PIN_FILL}"/>
+    </svg>`
+);
+
+function makePinIconStyle(scale = PIN_SCALE_NORMAL) {
+    return new Style({
+        image: new Icon({
+            src: `data:image/svg+xml;charset=utf-8,${PIN_SVG}`,
+            scale,
+            anchor: [0.5, 1],
+            anchorXUnits: "fraction",
+            anchorYUnits: "fraction",
+        }),
+    });
+}
+
+function animatePinScale(pin: Feature<Point>, to: number, duration = PIN_TWEEN_MS) {
+    const currentStyle = pin.getStyle() as Style | null;
+    const currentImage = currentStyle?.getImage() as Icon | undefined;
+    const from =
+        currentImage && typeof currentImage.getScale === "function"
+            ? (currentImage.getScale() as number)
+            : PIN_SCALE_NORMAL;
+
+    const prev = pin.get("_animId") as number | undefined;
+    if (prev) cancelAnimationFrame(prev);
+
+    const start = performance.now();
+    const easeOutCubic = (x: number) => 1 - Math.pow(1 - x, 3);
+
+    const step = (now: number) => {
+        const t = Math.min(1, (now - start) / duration);
+        const s = from + (to - from) * easeOutCubic(t);
+        pin.setStyle(makePinIconStyle(s));
+
+        if (t < 1) {
+            const id = requestAnimationFrame(step);
+            pin.set("_animId", id);
+        } else {
+            pin.set("_animId", undefined);
+        }
+    };
+
+    const id = requestAnimationFrame(step);
+    pin.set("_animId", id);
+}
 
 export default function WorldSugarMap() {
     const mapDivRef = useRef<HTMLDivElement>(null);
@@ -75,67 +122,25 @@ export default function WorldSugarMap() {
 
     const styleFunction = (feature: any) => {
         const iso3 = (feature.get("ISO_A3") || feature.get("iso_a3") || "").toUpperCase();
-        const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
-            : mode === "top-producers" ? TOP_PRODUCERS
-                : COMPETITORS_SPECIALTY;
+        const set =
+            mode === "all-producers"
+                ? ALL_SUGAR_PRODUCERS
+                : mode === "top-producers"
+                    ? TOP_PRODUCERS
+                    : COMPETITORS_SPECIALTY;
         return set.has(iso3) ? selectedCountryStyle : defaultCountryStyle;
     };
-
-    const PIN_RADIUS_NORMAL = 7;
-    const PIN_RADIUS_HOVER = 10;
-    const PIN_TWEEN_MS = 180;
-
-    function makePinStyle(radius: number) {
-        return new Style({
-            image: new CircleStyle({
-                radius,
-                fill: new Fill({ color: PIN_FILL }),
-            }),
-        });
-    }
-
-    function animatePinRadius(pin: Feature<Point>, to: number, duration = PIN_TWEEN_MS) {
-        const currentStyle = pin.getStyle() as Style | null;
-        const currentImage = currentStyle?.getImage?.();
-        const from =
-            currentImage && typeof (currentImage as any).getRadius === "function"
-                ? (currentImage as any).getRadius()
-                : PIN_RADIUS_NORMAL;
-
-        const prev = pin.get("_animId") as number | undefined;
-        if (prev) cancelAnimationFrame(prev);
-
-        const start = performance.now();
-        const easeOutCubic = (x: number) => 1 - Math.pow(1 - x, 3);
-
-        const step = (now: number) => {
-            const t = Math.min(1, (now - start) / duration);
-            const r = from + (to - from) * easeOutCubic(t);
-            pin.setStyle(makePinStyle(r));
-
-            if (t < 1) {
-                const id = requestAnimationFrame(step);
-                pin.set("_animId", id);
-            } else {
-                pin.set("_animId", undefined);
-            }
-        };
-
-        const id = requestAnimationFrame(step);
-        pin.set("_animId", id);
-    }
 
     useEffect(() => {
         if (!mapDivRef.current) return;
 
-        // ==== SOURCES ====
+        // SOURCES
         const countriesSource = new VectorSource({
             url: "/world_countries.geojson",
             format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
             wrapX: true,
             attributions: "© Natural Earth",
         });
-
         countriesSource.on("addfeature", (e: any) => {
             const f = e.feature;
             const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
@@ -155,32 +160,17 @@ export default function WorldSugarMap() {
                 name: p.name,
                 iso3: p.iso3,
             });
-            f.setStyle(pinStyle);
+            f.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
             pinSource.addFeature(f);
         });
 
-        countriesSource.on("featuresloadend", () =>
-            console.log("✓ countries loaded:", countriesSource.getFeatures().length)
-        );
-        countriesSource.on("featuresloaderror", (e) => console.error("✗ countries load error", e));
-        bordersSource.on("featuresloadend", () =>
-            console.log("✓ borders loaded:", bordersSource.getFeatures().length)
-        );
-        bordersSource.on("featuresloaderror", (e) => console.error("✗ borders load error", e));
-
-        // ==== LAYERS ====
-        const countries = new VectorLayer({
-            source: countriesSource,
-            style: styleFunction,
-            renderBuffer: 512,
-        });
+        // LAYERS
+        const countries = new VectorLayer({ source: countriesSource, style: styleFunction, renderBuffer: 512 });
         countries.setZIndex(5);
 
         const borders = new VectorLayer({
             source: bordersSource,
-            style: new Style({
-                stroke: new Stroke({ color: "#F4F5F0", width: 1.2, lineCap: "round", lineJoin: "round" }),
-            }),
+            style: new Style({ stroke: new Stroke({ color: "#F4F5F0", width: 1.6, lineCap: "round", lineJoin: "round" }) }),
             renderBuffer: 512,
         });
         borders.setZIndex(10);
@@ -188,15 +178,13 @@ export default function WorldSugarMap() {
         const pins = new VectorLayer({ source: pinSource });
         pins.setZIndex(20);
 
-        // ===== MAP & VIEW =====
+        // MAP
         const worldExtent = getProjection("EPSG:3857")!.getExtent();
         const f = 1.08;
         const c = getCenter(worldExtent);
         const w2 = (getWidth(worldExtent) * f) / 2;
         const h2 = (getHeight(worldExtent) * f) / 2;
-        const paddedExtent: [number, number, number, number] = [
-            c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2,
-        ];
+        const paddedExtent: [number, number, number, number] = [c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2];
 
         const map = new Map({
             target: mapDivRef.current!,
@@ -218,17 +206,13 @@ export default function WorldSugarMap() {
         const fitOnce = () => {
             const feats = countriesSource.getFeatures();
             if (feats.length) {
-                map.getView().fit(countriesSource.getExtent(), {
-                    padding: [10, 10, 10, 10],
-                    maxZoom: 1,
-                    duration: 300,
-                });
+                map.getView().fit(countriesSource.getExtent(), { padding: [10, 10, 10, 10], maxZoom: 1, duration: 300 });
                 countriesSource.un("featuresloadend", fitOnce as any);
             }
         };
         countriesSource.on("featuresloadend", fitOnce as any);
 
-        // ===== CLICK (pins → pays) =====
+        // CLICK (pins → pays)
         const clickKey = map.on("singleclick", (evt) => {
             let handled = false;
 
@@ -241,9 +225,7 @@ export default function WorldSugarMap() {
             }
 
             if (!handled) {
-                const f = map.forEachFeatureAtPixel(evt.pixel, (feat, layer) =>
-                    layer === countries ? feat : null
-                );
+                const f = map.forEachFeatureAtPixel(evt.pixel, (feat, layer) => (layer === countries ? feat : null));
                 if (f) {
                     const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
                     const admin = f.get("ADMIN") || f.get("name") || "Pays";
@@ -253,34 +235,30 @@ export default function WorldSugarMap() {
                             : modeRef.current === "top-producers"
                                 ? TOP_PRODUCERS
                                 : COMPETITORS_SPECIALTY;
-
-                    if (set.has(iso3)) {
-                        setSelected({ iso3, name: admin });
-                    } else {
-                        setSelected(null);
-                    }
+                    setSelected(set.has(iso3) ? { iso3, name: admin } : null);
                 } else {
                     setSelected(null);
                 }
             }
         });
 
+        // HOVER: grossir le pin du pays avec animation
         let lastHoveredIso3: string | null = null;
         let currentScaledPin: Feature<Point> | null = null;
 
-        function resetHoveredPin(immediate = false) {
+        const resetHoveredPin = (immediate = false) => {
             if (!currentScaledPin) return;
             if (immediate) {
-                currentScaledPin.setStyle(makePinStyle(PIN_RADIUS_NORMAL));
                 const prev = currentScaledPin.get("_animId") as number | undefined;
                 if (prev) cancelAnimationFrame(prev);
                 currentScaledPin.set("_animId", undefined);
+                currentScaledPin.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
             } else {
-                animatePinRadius(currentScaledPin, PIN_RADIUS_NORMAL, 120);
+                animatePinScale(currentScaledPin, PIN_SCALE_NORMAL, 120);
             }
             currentScaledPin = null;
             lastHoveredIso3 = null;
-        }
+        };
 
         const moveKey = map.on("pointermove", (evt) => {
             if (evt.dragging) return;
@@ -288,16 +266,8 @@ export default function WorldSugarMap() {
             const feat = map.forEachFeatureAtPixel(
                 evt.pixel,
                 (f, layer) => (layer === countries ? f : null),
-                { hitTolerance: 3 }
+                { hitTolerance: 4 }
             );
-
-            const resetPin = () => {
-                if (currentScaledPin) {
-                    currentScaledPin.setStyle(pinStyle);
-                    currentScaledPin = null;
-                }
-                lastHoveredIso3 = null;
-            };
 
             if (!feat) {
                 resetHoveredPin(false);
@@ -305,7 +275,6 @@ export default function WorldSugarMap() {
             }
 
             const iso3 = (feat.get("ISO_A3") || feat.get("iso_a3") || "").toUpperCase();
-
             const set =
                 modeRef.current === "all-producers"
                     ? ALL_SUGAR_PRODUCERS
@@ -320,53 +289,50 @@ export default function WorldSugarMap() {
 
             if (iso3 !== lastHoveredIso3) {
                 if (currentScaledPin) resetHoveredPin(false);
-                if (currentScaledPin) animatePinRadius(currentScaledPin, PIN_RADIUS_NORMAL);
 
                 const match = pins.getSource()
                     ?.getFeatures()
                     .find((p) => (p.get("iso3") || "").toUpperCase() === iso3) as Feature<Point> | undefined;
 
                 if (match) {
-                    animatePinRadius(match, PIN_RADIUS_HOVER);
+                    animatePinScale(match, PIN_SCALE_HOVER);
                     currentScaledPin = match;
                     lastHoveredIso3 = iso3;
                 } else {
-                    resetPin();
+                    resetHoveredPin(false);
                 }
             }
         });
 
-        setCountryLayer(countries);
-        setPinsLayer(pins);
-
+        // reset à la sortie du canvas
         const viewportEl = map.getViewport();
         const onMouseLeave = () => resetHoveredPin(false);
         viewportEl.addEventListener("mouseleave", onMouseLeave);
 
-        // ===== CLEANUP =====
+        setCountryLayer(countries);
+        setPinsLayer(pins);
+
+        // CLEANUP
         return () => {
             viewportEl.removeEventListener("mouseleave", onMouseLeave);
             unByKey(clickKey);
             unByKey(moveKey);
-            if (currentScaledPin) currentScaledPin.setStyle(pinStyle);
+            resetHoveredPin(true);
             map.setTarget(undefined);
             mapRef.current = null;
         };
     }, []);
 
+    // reset des pins au changement de mode
     useEffect(() => {
-        if (!countryLayer) return;
-        countryLayer.setStyle(styleFunction);
-        countryLayer.changed();
-        if (selected) {
-            const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
-                : mode === "top-producers" ? TOP_PRODUCERS
-                    : COMPETITORS_SPECIALTY;
-            if (!set.has(selected.iso3)) {
-                setSelected(null);
-            }
-        }
-    }, [mode]);
+        if (!pinsLayer) return;
+        pinsLayer.getSource()?.getFeatures().forEach((p) => {
+            const prev = p.get("_animId") as number | undefined;
+            if (prev) cancelAnimationFrame(prev);
+            p.set("_animId", undefined);
+            p.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
+        });
+    }, [mode, pinsLayer]);
 
     return (
         <div className="relative w-full h-screen" style={{ background: COLOR_BG }}>
