@@ -25,9 +25,9 @@ const ALL_SUGAR_PRODUCERS = new Set<string>([
     "BRA", "IND", "CHN", "THA", "MEX", "USA", "FRA", "RUS", "AUS", "VNM", "IDN", "PAK", "PHL", "ZAF", "EGY"
 ]);
 
-const TOP_PRODUCERS = new Set<string>(["BRA", "IND", "CHN", "THA", "MEX", "USA", "RUS"]); // exemple
+const TOP_PRODUCERS = new Set<string>(["BRA", "IND", "CHN", "THA", "MEX", "USA", "RUS"]);
 
-const COMPETITORS_SPECIALTY = new Set<string>(["FRA", "DEU", "GBR", "NLD"]); // “concurrents sucres de spécialité”
+const COMPETITORS_SPECIALTY = new Set<string>(["FRA", "DEU", "GBR", "NLD"]);
 
 // pins (centroïdes simples)
 const PINS: Array<{ iso3: string; name: string; lon: number; lat: number }> = [
@@ -46,6 +46,7 @@ const COLOR_BG = "#F4F5F0";
 const COLOR_COUNTRY = "#e8e8e8";
 const COLOR_SELECTED = "#88b940";
 const PIN_FILL = "#0D5B57";
+const PIN_DOT = "#0A3F3C";
 
 const defaultCountryStyle = new Style({
     fill: new Fill({ color: COLOR_COUNTRY }),
@@ -55,6 +56,13 @@ const selectedCountryStyle = new Style({
     fill: new Fill({ color: "#88b940" }),
 });
 
+const pinStyle = new Style({
+    image: new CircleStyle({
+        radius: 7,
+        fill: new Fill({ color: PIN_FILL }),
+    }),
+});
+
 const PIN_SCALE_NORMAL = 0.7;
 const PIN_SCALE_HOVER = 1;
 const PIN_TWEEN_MS = 180;
@@ -62,6 +70,7 @@ const PIN_TWEEN_MS = 180;
 const PIN_SVG = encodeURIComponent(
     `<svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
         <path d="M12 32c0 0 10-11 10-18a10 10 0 1 0-20 0c0 7 10 18 10 18z" fill="${PIN_FILL}"/>
+        <circle cx="12" cy="14" r="5" fill="${PIN_DOT}"/>
     </svg>`
 );
 
@@ -134,13 +143,14 @@ export default function WorldSugarMap() {
     useEffect(() => {
         if (!mapDivRef.current) return;
 
-        // SOURCES
+        // ==== SOURCES ====
         const countriesSource = new VectorSource({
             url: "/world_countries.geojson",
             format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
             wrapX: true,
             attributions: "© Natural Earth",
         });
+
         countriesSource.on("addfeature", (e: any) => {
             const f = e.feature;
             const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
@@ -160,17 +170,32 @@ export default function WorldSugarMap() {
                 name: p.name,
                 iso3: p.iso3,
             });
-            f.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
+            f.setStyle(pinStyle);
             pinSource.addFeature(f);
         });
 
-        // LAYERS
-        const countries = new VectorLayer({ source: countriesSource, style: styleFunction, renderBuffer: 512 });
+        countriesSource.on("featuresloadend", () =>
+            console.log("✓ countries loaded:", countriesSource.getFeatures().length)
+        );
+        countriesSource.on("featuresloaderror", (e) => console.error("✗ countries load error", e));
+        bordersSource.on("featuresloadend", () =>
+            console.log("✓ borders loaded:", bordersSource.getFeatures().length)
+        );
+        bordersSource.on("featuresloaderror", (e) => console.error("✗ borders load error", e));
+
+        // ==== LAYERS ====
+        const countries = new VectorLayer({
+            source: countriesSource,
+            style: styleFunction,
+            renderBuffer: 512,
+        });
         countries.setZIndex(5);
 
         const borders = new VectorLayer({
             source: bordersSource,
-            style: new Style({ stroke: new Stroke({ color: "#F4F5F0", width: 1.6, lineCap: "round", lineJoin: "round" }) }),
+            style: new Style({
+                stroke: new Stroke({ color: "#F4F5F0", width: 1.6, lineCap: "round", lineJoin: "round" }),
+            }),
             renderBuffer: 512,
         });
         borders.setZIndex(10);
@@ -178,13 +203,15 @@ export default function WorldSugarMap() {
         const pins = new VectorLayer({ source: pinSource });
         pins.setZIndex(20);
 
-        // MAP
+        // ===== MAP & VIEW =====
         const worldExtent = getProjection("EPSG:3857")!.getExtent();
         const f = 1.08;
         const c = getCenter(worldExtent);
         const w2 = (getWidth(worldExtent) * f) / 2;
         const h2 = (getHeight(worldExtent) * f) / 2;
-        const paddedExtent: [number, number, number, number] = [c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2];
+        const paddedExtent: [number, number, number, number] = [
+            c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2,
+        ];
 
         const map = new Map({
             target: mapDivRef.current!,
@@ -206,13 +233,17 @@ export default function WorldSugarMap() {
         const fitOnce = () => {
             const feats = countriesSource.getFeatures();
             if (feats.length) {
-                map.getView().fit(countriesSource.getExtent(), { padding: [10, 10, 10, 10], maxZoom: 1, duration: 300 });
+                map.getView().fit(countriesSource.getExtent(), {
+                    padding: [10, 10, 10, 10],
+                    maxZoom: 1,
+                    duration: 300,
+                });
                 countriesSource.un("featuresloadend", fitOnce as any);
             }
         };
         countriesSource.on("featuresloadend", fitOnce as any);
 
-        // CLICK (pins → pays)
+        // ===== CLICK (pins → pays) =====
         const clickKey = map.on("singleclick", (evt) => {
             let handled = false;
 
@@ -242,7 +273,7 @@ export default function WorldSugarMap() {
             }
         });
 
-        // HOVER: grossir le pin du pays avec animation
+        // HOVER: grossir le pin du pays (sélectionné) avec animation
         let lastHoveredIso3: string | null = null;
         let currentScaledPin: Feature<Point> | null = null;
 
@@ -333,6 +364,20 @@ export default function WorldSugarMap() {
             p.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
         });
     }, [mode, pinsLayer]);
+
+    useEffect(() => {
+        if (!countryLayer) return;
+        countryLayer.setStyle(styleFunction);
+        countryLayer.changed();
+        if (selected) {
+            const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
+                : mode === "top-producers" ? TOP_PRODUCERS
+                    : COMPETITORS_SPECIALTY;
+            if (!set.has(selected.iso3)) {
+                setSelected(null);
+            }
+        }
+    }, [mode]);
 
     return (
         <div className="relative w-full h-screen" style={{ background: COLOR_BG }}>
