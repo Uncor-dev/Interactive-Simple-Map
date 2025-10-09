@@ -117,6 +117,22 @@ function animatePinScale(pin: Feature<Point>, to: number, duration = PIN_TWEEN_M
     pin.set("_animId", id);
 }
 
+
+// ========= Helpers PINS =========
+function getCountrySetForMode(mode: Mode) {
+  return mode === "all-producers"
+    ? ALL_SUGAR_PRODUCERS
+    : mode === "top-producers"
+    ? TOP_PRODUCERS
+    : COMPETITORS_SPECIALTY;
+}
+
+function getPinSetForMode(mode: Mode): Set<string> | null {
+  if (mode === "top-producers") return TOP_PRODUCERS;
+  if (mode === "competitors-specialty") return COMPETITORS_SPECIALTY;
+  return null; // all-producers => zéro pin
+}
+
 export default function WorldSugarMap() {
     const mapDivRef = useRef<HTMLDivElement>(null);
     const [mode, setMode] = useState<Mode>("top-producers");
