@@ -1,1 +1,1 @@
-Interactive map of the world for the Sugar Union.
+Simple version of the interactive map, without any of the extra features. This is meant to be used as a starting point for people who want to build their own map, but don't want to deal with all the extra features that come with the full version.

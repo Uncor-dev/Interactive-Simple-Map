@@ -1,474 +1,398 @@
-import { useEffect, useRef, useState } from "react";
-import { get as getProjection } from "ol/proj";
-import { getCenter, getWidth, getHeight } from "ol/extent";
-import { unByKey } from "ol/Observable";
-import "ol/ol.css";
 import { Map, View } from "ol";
-import { fromLonLat } from "ol/proj";
-import VectorLayer from "ol/layer/Vector";
-import VectorSource from "ol/source/Vector";
 import GeoJSON from "ol/format/GeoJSON";
-import { Style, Fill, Stroke, Circle as CircleStyle } from "ol/style";
-import Feature from "ol/Feature";
-import Point from "ol/geom/Point";
-import CountryCard from "@/components/world-cards/CountryCard";
-import type { Mode as CardMode } from "@/components/world-cards/types";
-import Icon from "ol/style/Icon";
+import TileLayer from "ol/layer/Tile";
+import VectorLayer from "ol/layer/Vector";
+import "ol/ol.css";
+import { fromLonLat, transformExtent } from "ol/proj";
+import VectorSource from "ol/source/Vector";
+import XYZ from "ol/source/XYZ";
+import Fill from "ol/style/Fill";
+import Stroke from "ol/style/Stroke";
+import Style from "ol/style/Style";
+import { useEffect, useRef, useState } from "react";
 
-type Mode =
-    | "all-producers"
-    | "top-producers"
-    | "competitors-specialty";
+export default function MapComponent(): JSX.Element {
+  const mapDomRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<Map | null>(null);
 
+  const textureLayerRef = useRef<TileLayer | null>(null);
+  const reunionLayerRef = useRef<VectorLayer | null>(null);
+  const soleLayerRef = useRef<VectorLayer | null>(null);
+  const communesLayerRef = useRef<VectorLayer | null>(null);
+  const intercoLayerRef = useRef<VectorLayer | null>(null);
+  const batiLayerRef = useRef<VectorLayer | null>(null);
 
-const ALL_SUGAR_PRODUCERS = new Set<string>([
-    "BRA", "IND", "CHN", "THA", "MEX", "USA", "FRA", "RUS", "AUS", "VNM", "IDN", "PAK", "PHL", "ZAF", "EGY"
-]);
+  const [selectedZone, setSelectedZone] = useState<
+    "commune" | "interco" | "reunion"
+  >("reunion");
 
-const TOP_PRODUCERS = new Set<string>(["BRA", "IND", "CHN", "THA", "MEX", "USA", "RUS"]);
+  const MIN_ZOOM = 9.5;
+  const MAX_ZOOM = 18;
+  const PRECISE_STEP = 0.2;
+  const LARGE_ZOOM = 16.5;
 
-const COMPETITORS_SPECIALTY = new Set<string>(["FRA", "DEU", "GBR", "NLD"]);
+  useEffect(() => {
+    if (!mapDomRef.current) return;
 
-// pins (centroïdes simples)
-const PINS: Array<{ iso3: string; name: string; lon: number; lat: number }> = [
-    { iso3: "USA", name: "États-Unis", lon: -98.5, lat: 39.5 },
-    { iso3: "MEX", name: "Mexique", lon: -102.5, lat: 23.5 },
-    { iso3: "BRA", name: "Brésil", lon: -51.9253, lat: -14.235 },
-    { iso3: "FRA", name: "France", lon: 2.2137, lat: 46.2276 },
-    { iso3: "RUS", name: "Russie", lon: 105.3188, lat: 61.524 },
-    { iso3: "IND", name: "Inde", lon: 78.9629, lat: 20.5937 },
-    { iso3: "CHN", name: "Chine", lon: 104.1954, lat: 35.8617 },
-    { iso3: "THA", name: "Thaïlande", lon: 100.9925, lat: 15.87 },
-    { iso3: "AUS", name: "Australie", lon: 133.7751, lat: -25.274 },
-];
-
-const COLOR_BG = "#F4F5F0";
-const COLOR_COUNTRY = "#e8e8e8";
-const COLOR_SELECTED = "#88b940";
-const PIN_FILL = "#0D5B57";
-const PIN_DOT = "#0A3F3C";
-
-const defaultCountryStyle = new Style({
-    fill: new Fill({ color: COLOR_COUNTRY }),
-});
-
-const selectedCountryStyle = new Style({
-    fill: new Fill({ color: "#88b940" }),
-});
-
-const pinStyle = new Style({
-    image: new CircleStyle({
-        radius: 7,
-        fill: new Fill({ color: PIN_FILL }),
-    }),
-});
-
-const PIN_SCALE_NORMAL = 0.7;
-const PIN_SCALE_HOVER = 1;
-const PIN_TWEEN_MS = 180;
-
-const PIN_SVG = encodeURIComponent(
-    `<svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 32c0 0 10-11 10-18a10 10 0 1 0-20 0c0 7 10 18 10 18z" fill="${PIN_FILL}"/>
-        <circle cx="12" cy="14" r="5" fill="${PIN_DOT}"/>
-    </svg>`
-);
-
-function makePinIconStyle(scale = PIN_SCALE_NORMAL) {
-    return new Style({
-        image: new Icon({
-            src: `data:image/svg+xml;charset=utf-8,${PIN_SVG}`,
-            scale,
-            anchor: [0.5, 1],
-            anchorXUnits: "fraction",
-            anchorYUnits: "fraction",
-        }),
-    });
-}
-
-function animatePinScale(pin: Feature<Point>, to: number, duration = PIN_TWEEN_MS) {
-    const currentStyle = pin.getStyle() as Style | null;
-    const currentImage = currentStyle?.getImage() as Icon | undefined;
-    const from =
-        currentImage && typeof currentImage.getScale === "function"
-            ? (currentImage.getScale() as number)
-            : PIN_SCALE_NORMAL;
-
-    const prev = pin.get("_animId") as number | undefined;
-    if (prev) cancelAnimationFrame(prev);
-
-    const start = performance.now();
-    const easeOutCubic = (x: number) => 1 - Math.pow(1 - x, 3);
-
-    const step = (now: number) => {
-        const t = Math.min(1, (now - start) / duration);
-        const s = from + (to - from) * easeOutCubic(t);
-        pin.setStyle(makePinIconStyle(s));
-
-        if (t < 1) {
-            const id = requestAnimationFrame(step);
-            pin.set("_animId", id);
-        } else {
-            pin.set("_animId", undefined);
-        }
-    };
-
-    const id = requestAnimationFrame(step);
-    pin.set("_animId", id);
-}
-
-
-// ========= Helpers PINS =========
-function getCountrySetForMode(mode: Mode) {
-  return mode === "all-producers"
-    ? ALL_SUGAR_PRODUCERS
-    : mode === "top-producers"
-    ? TOP_PRODUCERS
-    : COMPETITORS_SPECIALTY;
-}
-
-function getPinSetForMode(mode: Mode): Set<string> | null {
-  if (mode === "top-producers") return TOP_PRODUCERS;
-  if (mode === "competitors-specialty") return COMPETITORS_SPECIALTY;
-  return null; // all-producers => zéro pin
-}
-
-export default function WorldSugarMap() {
-    const mapDivRef = useRef<HTMLDivElement>(null);
-    const [mode, setMode] = useState<Mode>("top-producers");
-    const [countryLayer, setCountryLayer] = useState<VectorLayer<VectorSource> | null>(null);
-    const [selected, setSelected] = useState<{ name: string; iso3: string } | null>(null);
-    const [pinsLayer, setPinsLayer] = useState<VectorLayer<VectorSource> | null>(null);
-    const mapRef = useRef<Map | null>(null);
-    const modeRef = useRef<Mode>(mode);
-    useEffect(() => {
-        modeRef.current = mode;
-    }, [mode]);
-
-    const styleFunction = (feature: any) => {
-        const iso3 = (feature.get("ISO_A3") || feature.get("iso_a3") || "").toUpperCase();
-        const set =
-            mode === "all-producers"
-                ? ALL_SUGAR_PRODUCERS
-                : mode === "top-producers"
-                    ? TOP_PRODUCERS
-                    : COMPETITORS_SPECIALTY;
-        return set.has(iso3) ? selectedCountryStyle : defaultCountryStyle;
-    };
-
-    useEffect(() => {
-        if (!mapDivRef.current) return;
-
-        // ==== SOURCES ====
-        const countriesSource = new VectorSource({
-            url: "/world_countries.geojson",
-            format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
-            wrapX: true,
-            attributions: "© Natural Earth",
-        });
-
-        countriesSource.on("addfeature", (e: any) => {
-            const f = e.feature;
-            const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
-            if (iso3 === "ATA") countriesSource.removeFeature(f);
-        });
-
-        const bordersSource = new VectorSource({
-            url: "/world_borders.geojson",
-            format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
-            wrapX: true,
-        });
-
-        const pinSource = new VectorSource({ wrapX: false });
-        PINS.forEach((p) => {
-            const f = new Feature({
-                geometry: new Point(fromLonLat([p.lon, p.lat])),
-                name: p.name,
-                iso3: p.iso3,
-            });
-            f.setStyle(pinStyle);
-            pinSource.addFeature(f);
-        });
-
-        countriesSource.on("featuresloadend", () =>
-            console.log("✓ countries loaded:", countriesSource.getFeatures().length)
-        );
-        countriesSource.on("featuresloaderror", (e) => console.error("✗ countries load error", e));
-        bordersSource.on("featuresloadend", () =>
-            console.log("✓ borders loaded:", bordersSource.getFeatures().length)
-        );
-        bordersSource.on("featuresloaderror", (e) => console.error("✗ borders load error", e));
-
-        // ==== LAYERS ====
-        const countries = new VectorLayer({
-            source: countriesSource,
-            style: styleFunction,
-            renderBuffer: 512,
-        });
-        countries.setZIndex(5);
-
-        const borders = new VectorLayer({
-            source: bordersSource,
-            style: new Style({
-                stroke: new Stroke({ color: "#F4F5F0", width: 1.6, lineCap: "round", lineJoin: "round" }),
-            }),
-            renderBuffer: 512,
-        });
-        borders.setZIndex(10);
-
-        const pins = new VectorLayer({ source: pinSource });
-        pins.setZIndex(20);
-
-        // ===== MAP & VIEW =====
-        const worldExtent = getProjection("EPSG:3857")!.getExtent();
-        const f = 1.08;
-        const c = getCenter(worldExtent);
-        const w2 = (getWidth(worldExtent) * f) / 2;
-        const h2 = (getHeight(worldExtent) * f) / 2;
-        const paddedExtent: [number, number, number, number] = [
-            c[0] - w2, c[1] - h2, c[0] + w2, c[1] + h2,
-        ];
-
-        const map = new Map({
-            target: mapDivRef.current!,
-            layers: [countries, borders, pins],
-            view: new View({
-                center: fromLonLat([2.2137, 46.2276]),
-                zoom: 1.0,
-                minZoom: 0.5,
-                maxZoom: 5,
-                extent: paddedExtent,
-                constrainOnlyCenter: false,
-                multiWorld: false,
-                enableRotation: false,
-            }),
-            controls: [],
-        });
-        mapRef.current = map;
-
-        const fitOnce = () => {
-            const feats = countriesSource.getFeatures();
-            if (feats.length) {
-                map.getView().fit(countriesSource.getExtent(), {
-                    padding: [10, 10, 10, 10],
-                    maxZoom: 1,
-                    duration: 300,
-                });
-                countriesSource.un("featuresloadend", fitOnce as any);
-            }
-        };
-        countriesSource.on("featuresloadend", fitOnce as any);
-
-        // ===== CLICK (pins → pays) =====
-        const clickKey = map.on("singleclick", (evt) => {
-            let handled = false;
-
-            const pin = map.forEachFeatureAtPixel(evt.pixel, (f, layer) => (layer === pins ? f : null));
-            if (pin) {
-                const iso3 = (pin.get("iso3") || "").toUpperCase();
-                const name = pin.get("name") || "";
-                setSelected({ iso3, name });
-                handled = true;
-            }
-
-            if (!handled) {
-                const f = map.forEachFeatureAtPixel(evt.pixel, (feat, layer) => (layer === countries ? feat : null));
-                if (f) {
-                    const iso3 = (f.get("ISO_A3") || f.get("iso_a3") || "").toUpperCase();
-                    const admin = f.get("ADMIN") || f.get("name") || "Pays";
-                    const set =
-                        modeRef.current === "all-producers"
-                            ? ALL_SUGAR_PRODUCERS
-                            : modeRef.current === "top-producers"
-                                ? TOP_PRODUCERS
-                                : COMPETITORS_SPECIALTY;
-                    setSelected(set.has(iso3) ? { iso3, name: admin } : null);
-                } else {
-                    setSelected(null);
-                }
-            }
-        });
-
-        // HOVER: grossir le pin du pays (sélectionné) avec animation
-        let lastHoveredIso3: string | null = null;
-        let currentScaledPin: Feature<Point> | null = null;
-
-        const resetHoveredPin = (immediate = false) => {
-            if (!currentScaledPin) return;
-            if (immediate) {
-                const prev = currentScaledPin.get("_animId") as number | undefined;
-                if (prev) cancelAnimationFrame(prev);
-                currentScaledPin.set("_animId", undefined);
-                currentScaledPin.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
-            } else {
-                animatePinScale(currentScaledPin, PIN_SCALE_NORMAL, 120);
-            }
-            currentScaledPin = null;
-            lastHoveredIso3 = null;
-        };
-
-        const moveKey = map.on("pointermove", (evt) => {
-            if (evt.dragging) return;
-
-            const feat = map.forEachFeatureAtPixel(
-                evt.pixel,
-                (f, layer) => (layer === countries ? f : null),
-                { hitTolerance: 4 }
-            );
-
-            if (!feat) {
-                resetHoveredPin(false);
-                return;
-            }
-
-            const iso3 = (feat.get("ISO_A3") || feat.get("iso_a3") || "").toUpperCase();
-            const set =
-                modeRef.current === "all-producers"
-                    ? ALL_SUGAR_PRODUCERS
-                    : modeRef.current === "top-producers"
-                        ? TOP_PRODUCERS
-                        : COMPETITORS_SPECIALTY;
-
-            if (!set.has(iso3)) {
-                resetHoveredPin(false);
-                return;
-            }
-
-            if (iso3 !== lastHoveredIso3) {
-                if (currentScaledPin) resetHoveredPin(false);
-
-                const match = pins.getSource()
-                    ?.getFeatures()
-                    .find((p) => (p.get("iso3") || "").toUpperCase() === iso3) as Feature<Point> | undefined;
-
-                if (match) {
-                    animatePinScale(match, PIN_SCALE_HOVER);
-                    currentScaledPin = match;
-                    lastHoveredIso3 = iso3;
-                } else {
-                    resetHoveredPin(false);
-                }
-            }
-        });
-
-        // reset à la sortie du canvas
-        const viewportEl = map.getViewport();
-        const onMouseLeave = () => resetHoveredPin(false);
-        viewportEl.addEventListener("mouseleave", onMouseLeave);
-
-        setCountryLayer(countries);
-        setPinsLayer(pins);
-
-        // CLEANUP
-        return () => {
-            viewportEl.removeEventListener("mouseleave", onMouseLeave);
-            unByKey(clickKey);
-            unByKey(moveKey);
-            resetHoveredPin(true);
-            map.setTarget(undefined);
-            mapRef.current = null;
-        };
-    }, []);
-
-    // reset des pins au changement de mode
-    useEffect(() => {
-        if (!pinsLayer) return;
-        pinsLayer.getSource()?.getFeatures().forEach((p) => {
-            const prev = p.get("_animId") as number | undefined;
-            if (prev) cancelAnimationFrame(prev);
-            p.set("_animId", undefined);
-            p.setStyle(makePinIconStyle(PIN_SCALE_NORMAL));
-        });
-    }, [mode, pinsLayer]);
-
-    useEffect(() => {
-        if (!countryLayer) return;
-        countryLayer.setStyle(styleFunction);
-        countryLayer.changed();
-        if (selected) {
-            const set = mode === "all-producers" ? ALL_SUGAR_PRODUCERS
-                : mode === "top-producers" ? TOP_PRODUCERS
-                    : COMPETITORS_SPECIALTY;
-            if (!set.has(selected.iso3)) {
-                setSelected(null);
-            }
-        }
-    }, [mode]);
-
-    return (
-        <div className="relative w-full h-screen" style={{ background: COLOR_BG }}>
-            <div ref={mapDivRef} className="absolute inset-0" />
-            {/* panneau radio */}
-            <div className="absolute left-4 top-4 bg-white shadow-lg rounded-sm z-10 w-64 p-4">
-                <h3 className="font-semibold mb-2">Changer la sélection :</h3>
-                <div className="grid gap-2 text-sm font-light">
-                    <label className="flex items-center gap-2">
-                        <input
-                            type="radio"
-                            name="mode"
-                            value="all-producers"
-                            checked={mode === "all-producers"}
-                            onChange={() => setMode("all-producers")}
-                        />
-                        <span>Pays producteurs de sucre de canne et de betterave</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                        <input
-                            type="radio"
-                            name="mode"
-                            value="top-producers"
-                            checked={mode === "top-producers"}
-                            onChange={() => setMode("top-producers")}
-                        />
-                        <span>Principaux producteurs de sucre au monde</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                        <input
-                            type="radio"
-                            name="mode"
-                            value="competitors-specialty"
-                            checked={mode === "competitors-specialty"}
-                            onChange={() => setMode("competitors-specialty")}
-                        />
-                        <span>Principaux concurrents des sucres de spécialité</span>
-                    </label>
-                </div>
-            </div>
-
-            {/* légende */}
-            <div className="absolute left-4 bottom-4 bg-white shadow-lg rounded-sm z-10 p-4 w-72">
-                <h4 className="font-semibold mb-2">Légende</h4>
-                <ul className="text-xs font-light grid gap-2">
-                    <li className="flex items-center gap-3">
-                        <div className="w-5 h-5 rounded" style={{ background: COLOR_SELECTED }} />
-                        <span>Pays sélectionnés</span>
-                    </li>
-                    <li className="flex items-center gap-3">
-                        <div className="w-5 h-5 rounded-full" style={{ background: PIN_FILL }} />
-                        <span>Cliquer pour plus d’informations</span>
-                    </li>
-                </ul>
-            </div>
-            {/* popup */}
-            {selected && (
-                <div className="absolute inset-0 z-30 pointer-events-none">
-                    <div className="absolute top-4 right-4 pointer-events-auto">
-                        <div className="bg-white/95 backdrop-blur shadow-xl rounded-md p-4 w-80 max-h-[90vh] overflow-y-auto">
-                            <div className="flex items-start justify-between mb-2">
-                                <h5 className="font-semibold">{selected.name}</h5>
-                                <button
-                                    className="text-gray-500 hover:text-gray-800"
-                                    onClick={() => setSelected(null)}
-                                >
-                                    ✕
-                                </button>
-                            </div>
-
-                            <CountryCard mode={mode as CardMode} iso3={selected.iso3} name={selected.name} />
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
+    const reunionExtent = transformExtent(
+      [54.5, -22.0, 56.5, -20.5],
+      "EPSG:4326",
+      "EPSG:3857",
     );
+
+    // Filtre blanc réintroduit sur La Réunion (au-dessus du hillshade, en-dessous des autres vecteurs)
+    // Ajuste l'alpha si le filtre est trop/peu visible.
+    const reunionStyle = new Style({
+      stroke: new Stroke({ color: "rgba(45,95,82,0.6)", width: 0.8 }),
+      fill: new Fill({ color: "rgba(245,245,245,0.50)" }), // <--- filtre blanc qui atténue le relief
+    });
+
+    const communesStyle = new Style({
+      stroke: new Stroke({ color: "rgba(45,95,82,0.7)", width: 0.7 }),
+      fill: new Fill({ color: "rgba(0,0,0,0)" }),
+    });
+
+    const intercoStyle = communesStyle; // même style que communes
+
+    // Sole cannière : couleur nette (opaque) au-dessus du filtre blanc
+    const soleCanniereStyle = new Style({
+      fill: new Fill({ color: "#009a73" }),
+      stroke: new Stroke({ color: "rgba(0,0,0,0.12)", width: 0.5 }),
+    });
+
+    const batiStyle = new Style({
+      fill: new Fill({ color: "#d95f02" }),
+      stroke: new Stroke({ color: "rgba(0,0,0,0.15)", width: 0.5 }),
+    });
+
+    // Hillshade (relief gris) en dessous — opacité réglée pour être visible mais atténérée par le filtre blanc
+    const textureLayer = new TileLayer({
+      source: new XYZ({
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
+        crossOrigin: "anonymous",
+      }),
+      opacity: 0.6,
+      zIndex: 0,
+    });
+    textureLayerRef.current = textureLayer;
+
+    const reunionLayer = new VectorLayer({
+      source: new VectorSource({
+        url: "/all-reunion.geojson",
+        format: new GeoJSON({
+          dataProjection: "EPSG:4326",
+          featureProjection: "EPSG:3857",
+        }),
+      }),
+      style: reunionStyle,
+      zIndex: 10,
+    });
+    reunionLayerRef.current = reunionLayer;
+
+    const soleLayer = new VectorLayer({
+      source: new VectorSource({
+        url: "/sole-canniere.geojson",
+        format: new GeoJSON({
+          dataProjection: "EPSG:4326",
+          featureProjection: "EPSG:3857",
+        }),
+      }),
+      style: soleCanniereStyle,
+      zIndex: 20,
+    });
+    soleLayerRef.current = soleLayer;
+
+    const batiLayer = new VectorLayer({
+      source: new VectorSource({
+        url: "/bati.geojson",
+        format: new GeoJSON({
+          dataProjection: "EPSG:4326",
+          featureProjection: "EPSG:3857",
+        }),
+      }),
+      style: batiStyle,
+      zIndex: 25,
+    });
+    batiLayerRef.current = batiLayer;
+
+    const communesLayer = new VectorLayer({
+      source: new VectorSource({
+        url: "/communes.geojson",
+        format: new GeoJSON({
+          dataProjection: "EPSG:4326",
+          featureProjection: "EPSG:3857",
+        }),
+      }),
+      style: communesStyle,
+      zIndex: 30,
+    });
+    communesLayerRef.current = communesLayer;
+
+    const intercoLayer = new VectorLayer({
+      source: new VectorSource({
+        url: "/interco.geojson",
+        format: new GeoJSON({
+          dataProjection: "EPSG:4326",
+          featureProjection: "EPSG:3857",
+        }),
+      }),
+      style: intercoStyle,
+      zIndex: 30,
+    });
+    intercoLayerRef.current = intercoLayer;
+
+    const layers = [
+      textureLayer,
+      reunionLayer,
+      soleLayer,
+      batiLayer,
+      communesLayer,
+      intercoLayer,
+    ];
+
+    const isMobile = window.innerWidth < 640;
+
+    const view = new View({
+      center: fromLonLat([55.5364, -21.1151]),
+      zoom: isMobile ? 9.5 : 10,
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
+      extent: reunionExtent,
+    });
+
+    const map = new Map({
+      target: mapDomRef.current!,
+      layers,
+      view,
+      controls: [],
+    });
+
+    mapRef.current = map;
+
+    // Masquer communes / interco par défaut
+    communesLayer.setVisible(false);
+    intercoLayer.setVisible(false);
+
+    return () => {
+      map.setTarget(undefined);
+      mapRef.current = null;
+    };
+  }, []);
+
+  // Toggle visibility sans recréer la map
+  useEffect(() => {
+    const communes = communesLayerRef.current;
+    const interco = intercoLayerRef.current;
+    if (!communes || !interco) return;
+
+    if (selectedZone === "reunion") {
+      communes.setVisible(false);
+      interco.setVisible(false);
+    } else if (selectedZone === "commune") {
+      communes.setVisible(true);
+      interco.setVisible(false);
+    } else {
+      communes.setVisible(false);
+      interco.setVisible(true);
+    }
+  }, [selectedZone]);
+
+  const getView = () => mapRef.current?.getView() ?? null;
+
+  const animateZoomTo = (z: number) => {
+    const v = getView();
+    if (!v) return;
+    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
+    v.animate({ zoom: clamped, duration: 300 });
+  };
+
+  const preciseZoomIn = () => {
+    const v = getView();
+    if (!v) return;
+    const cur = v.getZoom() ?? 10;
+    animateZoomTo(cur + PRECISE_STEP);
+  };
+
+  const preciseZoomOut = () => {
+    const v = getView();
+    if (!v) return;
+    const cur = v.getZoom() ?? 10;
+    animateZoomTo(cur - PRECISE_STEP);
+  };
+
+  const largeZoomIn = () => animateZoomTo(LARGE_ZOOM);
+
+  const resetView = () => {
+    const v = getView();
+    if (!v) return;
+    const isMobile = window.innerWidth < 640;
+    const defaultZoom = isMobile ? 9.5 : 10;
+    v.animate({
+      center: fromLonLat([55.5364, -21.1151]),
+      zoom: defaultZoom,
+      duration: 400,
+    });
+  };
+
+  return (
+    <div style={{ width: "100%", height: "700px", position: "relative" }}>
+      {/* Contrôle minimal pour changer la délimitation */}
+      <div
+        style={{
+          position: "absolute",
+          top: 12,
+          left: 12,
+          zIndex: 1000,
+          background: "white",
+          padding: "8px",
+          borderRadius: 8,
+          boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+          Changer la sélection
+        </div>
+
+        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>
+          <input
+            type="radio"
+            name="zone"
+            value="reunion"
+            checked={selectedZone === "reunion"}
+            onChange={() => setSelectedZone("reunion")}
+            style={{ marginRight: 8 }}
+          />
+          Toute La Réunion
+        </label>
+
+        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>
+          <input
+            type="radio"
+            name="zone"
+            value="interco"
+            checked={selectedZone === "interco"}
+            onChange={() => setSelectedZone("interco")}
+            style={{ marginRight: 8 }}
+          />
+          Intercommunalités
+        </label>
+
+        <label style={{ display: "block", fontSize: 13 }}>
+          <input
+            type="radio"
+            name="zone"
+            value="commune"
+            checked={selectedZone === "commune"}
+            onChange={() => setSelectedZone("commune")}
+            style={{ marginRight: 8 }}
+          />
+          Communes
+        </label>
+      </div>
+
+      {/* Panneau de zoom */}
+      <div
+        style={{
+          position: "absolute",
+          top: 12,
+          right: 12,
+          zIndex: 1000,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            background: "white",
+            padding: 6,
+            borderRadius: 8,
+            boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+          }}
+        >
+          <button
+            onClick={preciseZoomIn}
+            title="Zoom précis +"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 6,
+              border: "none",
+              background: "#ffffff",
+              cursor: "pointer",
+              fontSize: 18,
+              marginBottom: 6,
+            }}
+          >
+            +
+          </button>
+
+          <button
+            onClick={preciseZoomOut}
+            title="Zoom précis -"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 6,
+              border: "none",
+              background: "#ffffff",
+              cursor: "pointer",
+              fontSize: 18,
+            }}
+          >
+            −
+          </button>
+        </div>
+
+        <div
+          style={{
+            background: "white",
+            padding: 6,
+            borderRadius: 8,
+            boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+            display: "flex",
+            gap: 8,
+          }}
+        >
+          <button
+            onClick={largeZoomIn}
+            title="Zoom beaucoup (fixe)"
+            style={{
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: "#ffffff",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            ++
+          </button>
+
+          <button
+            onClick={resetView}
+            title="Réinitialiser la vue"
+            style={{
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: "#ffffff",
+              cursor: "pointer",
+            }}
+          >
+            R
+          </button>
+        </div>
+      </div>
+
+      {/* Conteneur carte : fond vert très clair pour la mer */}
+      <div
+        ref={mapDomRef}
+        style={{ width: "100%", height: "100%", backgroundColor: "#e6f9e6" }}
+      />
+    </div>
+  );
 }
